@@ -78,19 +78,54 @@ def show_password_form():
                 st.rerun()
             else:
                 st.error("🚨 Incorrect password.")
-
+                
 def show_reddit_login_page():
-    """Toont de 'Login with Reddit' knop."""
+    """Toont de 'Login with Reddit' knop, maar gebruikt een custom HTML-link."""
     st.title("🚀 The Audience Finder")
     st.header("Step 2: Connect your Reddit Account")
     st.markdown("Your access is confirmed. Please log in with your Reddit account to proceed. This allows the app to perform searches on your behalf, using your personal API access rate.")
     
+    # Maak de PRAW instance en de autorisatie-URL (dit blijft hetzelfde)
     reddit_auth_instance = praw.Reddit(
         client_id=CLIENT_ID, client_secret=CLIENT_SECRET,
         redirect_uri=REDIRECT_URI, user_agent="AudienceFinder/Boyd (OAuth Setup)"
     )
     auth_url = reddit_auth_instance.auth.url(scopes=["identity", "read"], state="unique_state_123", duration="permanent")
-    st.link_button("Login with Reddit", auth_url, type="primary", use_container_width=True)
+
+    # --- START: DE VERBETERING ---
+    # We vervangen de st.link_button met een custom-gestijlde HTML link
+    
+    # 1. Definieer de CSS stijl voor onze knop-link
+    button_css = """
+    <style>
+    .custom-button {
+        display: inline-block;
+        padding: 0.5rem 1rem;
+        background-color: #FF4500; /* Reddit Orangered */
+        color: white !important;
+        text-align: center;
+        text-decoration: none;
+        border-radius: 0.5rem;
+        font-weight: bold;
+        width: 100%;
+        box-sizing: border-box;
+    }
+    .custom-button:hover {
+        background-color: #E63E00;
+        text-decoration: none;
+    }
+    </style>
+    """
+    
+    # 2. Creëer de HTML-link met de CSS-klasse
+    button_html = f'<a href="{auth_url}" class="custom-button" target="_self">Login with Reddit</a>'
+
+    # 3. Render de CSS en de HTML met st.markdown
+    st.markdown(button_css, unsafe_allow_html=True)
+    st.markdown(button_html, unsafe_allow_html=True)
+    
+    # --- EINDE: DE VERBETERING ---
+    
     st.info("ℹ️ You will be redirected to Reddit to grant permission. This app never sees your password.")
 
 def show_main_app(reddit):
