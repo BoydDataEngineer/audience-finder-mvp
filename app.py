@@ -1,100 +1,233 @@
+# app.py
+
 import streamlit as st
 import pandas as pd
 from io import BytesIO
-from reddit_scanner import find_communities
+import praw
+from openpyxl.styles import Font, NamedStyle
+from praw.exceptions import PRAWException
 
-# --- Functie om het inlogformulier te tonen ---
-def show_login_form():
-    st.title("🚀 The Audience Finder")
-    st.header("Login")
+# --- Configuratie & Secrets ---
+# Deze haalt u uit de 'Secrets' van uw Streamlit app.
+CLIENT_ID = st.secrets.get("reddit_client_id")
+CLIENT_SECRET = st.secrets.get("reddit_client_secret")
+APP_PASSWORD = st.secrets.get("app_password")  # Wachtwoord voor app-toegang
+REDIRECT_URI = st.secrets.get("redirect_uri") # URL van je Streamlit app, bijv. "https://jouw-app.streamlit.app/"
+
+# --- Helper Functie (onveranderd) ---
+# Zorg ervoor dat deze functie in 'reddit_scanner.py' staat of hier gedefinieerd is.
+@st.cache_data(ttl=3600) # Cache resultaten voor een uur
+def find_communities(_reddit_instance, search_queries: tuple):
+    # Let op: De PRAW instance (_reddit_instance) kan niet direct gecached worden, 
+    # maar we kunnen de functie cachen zolang de queries hetzelfde zijn.
+    # In een echte productie-app zou je de instance buiten de gecachete functie initialiseren.
+    # Voor nu is dit een werkbare oplossing.
     
-    with st.form(key='login_form'):
-        password = st.text_input("Please enter the password", type="password", label_visibility="collapsed")
-        submitted = st.form_submit_button("Login")
+    # We moeten hier een nieuwe instance maken omdat de PRAW objecten zelf niet
+    # 'hashable' zijn voor de Streamlit cache. Dit is een veelvoorkomende workaround.
+    reddit = praw.Reddit(
+        client_id=CLIENT_ID,
+        client_secret=CLIENT_SECRET,
+        user_agent=f"AudienceFinder by Boyd v0.3 (cached_run)",
+        refresh_token=st.session_state.get("refresh_token")
+    )
 
-        if submitted:
-            if password == st.secrets.get("app_password", "test"): # Gebruikt secret, met 'test' als fallback voor lokaal
-                st.session_state["logged_in"] = True
+    aggregated_results = {}
+    for query in search_queries:
+        try:
+            for subreddit in reddit.subreddits.search(query, limit=7):
+                community_name = subreddit.display_name
+                if community_name in aggregated_results:
+                    aggregated_results[community_name]['Found By'].add(query)
+                else:
+                    aggregated_results[community_name] = {
+                        'Community': community_name,
+                        'Members': subreddit.subscribers,
+                        'Community Link': f"https://www.reddit.com/r/{community_name}",
+                        'Top Posts (Month)': f"https://www.reddit.com/r/{community_name}/top/?t=month",
+                        'Found By': {query}
+                    }
+        except Exception as e:
+            st.warning(f"Could not search with query '{query}'. Error: {e}")
+
+    if not aggregated_results:
+        return pd.DataFrame()
+
+    final_list = list(aggregated_results.values())
+    for item in final_list:
+        item['Found By (Keywords)'] = ', '.join(sorted(list(item['Found By'])))
+        del item['Found By']
+
+    df = pd.DataFrame(final_list)
+    if df.empty:
+        return df
+
+    return df.sort_values(by='Members', ascending=False).reset_index(drop=True)
+
+# --- UI Functies ---
+
+def show_password_form():
+    """Toont het wachtwoordformulier."""
+    st.title("🚀 The Audience Finder")
+    st.header("App Access Login")
+    with st.form(key='password_login_form'):
+        password = st.text_input("Enter the app password", type="password", label_visibility="collapsed")
+        if st.form_submit_button("Login", use_container_width=True):
+            if password == APP_PASSWORD:
+                st.session_state["password_correct"] = True
                 st.rerun()
             else:
-                st.error("🚨 The password you entered is incorrect.")
+                st.error("🚨 Incorrect password.")
 
-# --- Functie om de hoofdapplicatie te tonen (AANGEPAST) ---
-def show_main_app():
+def show_reddit_login_page():
+    """Toont de 'Login with Reddit' knop."""
     st.title("🚀 The Audience Finder")
-    st.markdown("Discover relevant Reddit communities and their top posts based on your search queries.")
+    st.header("Step 2: Connect your Reddit Account")
+    st.markdown("Your access is confirmed. Please log in with your Reddit account to proceed. This allows the app to perform searches on your behalf, using your personal API access rate.")
+    
+    reddit_auth_instance = praw.Reddit(
+        client_id=CLIENT_ID, client_secret=CLIENT_SECRET,
+        redirect_uri=REDIRECT_URI, user_agent="AudienceFinder/Boyd (OAuth Setup)"
+    )
+    auth_url = reddit_auth_instance.auth.url(scopes=["identity", "read"], state="unique_state_123", duration="permanent")
+    st.link_button("Login with Reddit", auth_url, type="primary", use_container_width=True)
+    st.info("ℹ️ You will be redirected to Reddit to grant permission. This app never sees your password.")
+
+def show_main_app(reddit):
+    """Toont de daadwerkelijke zoek-app met correct gestijlde, klikbare links."""
+    # ... (de titel en logout knop code blijft hetzelfde) ...
+    col1, col2 = st.columns([0.85, 0.15])
+    with col1:
+        st.title("🚀 The Audience Finder")
+        st.markdown(f"Logged in as **u/{st.session_state.username}**. Discover relevant Reddit communities.")
+    with col2:
+        if st.button("Logout", use_container_width=True):
+            st.session_state.clear()
+            st.rerun()
 
     st.header("1. Enter Your Search Queries")
     st.markdown("Enter one search query per line. Combine words on a single line for more specific results.")
-    
     with st.form(key='search_form'):
-        search_queries_input = st.text_area(
-            "Label for screen readers, not displayed",
-            label_visibility="collapsed",
-            height=150, 
-            placeholder="For example:\nSaaS for startups\ndigital nomad\nproductivity tools"
-        )
-        find_button_submitted = st.form_submit_button("Find Communities", type="primary")
+        search_queries_input = st.text_area("Queries", height=150, label_visibility="collapsed", placeholder="For example:\nSaaS for startups...")
+        if st.form_submit_button("Find Communities", type="primary", use_container_width=True):
+            queries_tuple = tuple(sorted([q.strip() for q in search_queries_input.split('\n') if q.strip()]))
+            if not queries_tuple:
+                st.warning("Please enter at least one search query.")
+            else:
+                with st.spinner('Searching the depths of Reddit... This might take a moment.'):
+                    results_df = find_communities(reddit, queries_tuple)
+                    st.session_state['results_df'] = results_df
 
-    if find_button_submitted:
-        search_queries_list = [query.strip() for query in search_queries_input.split('\n') if query.strip()]
-        
-        if not search_queries_list:
-            st.warning("Please enter at least one search query.")
-        else:
-            with st.spinner('Searching the depths of Reddit... This might take a moment.'):
-                try:
-                    # De find_communities functie geeft nu geaggregeerde data terug
-                    results_df = find_communities(search_queries_list)
-                    
-                    st.header("2. Discovered Communities")
-                    
-                    if not results_df.empty:
-                        # --- BELANGRIJKE WIJZIGING ---
-                        # We maken een kopie om de tracking kolommen toe te voegen voor de download
-                        # De weergave op het scherm toont alleen de pure data.
-                        df_for_display = results_df.copy()
+    if 'results_df' in st.session_state:
+        results_df = st.session_state['results_df']
+        st.header("2. Discovered Communities")
+        if not results_df.empty:
+            st.dataframe(results_df, use_container_width=True)
 
-                        # Maak het DataFrame voor de download
-                        df_for_download = results_df.copy()
-                        df_for_download['Status'] = 'Not Started'
-                        df_for_download['Priority'] = ''
-                        df_for_download['Notes'] = ''
-                        df_for_download['Last Contact'] = ''
-                        
-                        # Toon het DataFrame ZONDER de extra kolommen op het scherm
-                        st.dataframe(df_for_display, use_container_width=True)
+            st.header("3. Download Your Results")
+            df_for_download = results_df.copy()
+            df_for_download['Community Link'] = df_for_download['Community Link'].apply(lambda url: f'=HYPERLINK("{url}", "{url}")')
+            df_for_download['Top Posts (Month)'] = df_for_download['Top Posts (Month)'].apply(lambda url: f'=HYPERLINK("{url}", "{url}")')
+            df_for_download['Status'] = 'Not Started'; df_for_download['Priority'] = ''; df_for_download['Notes'] = ''; df_for_download['Last Contact'] = ''
 
-                        # Excel Download Logic
-                        output = BytesIO()
-                        # We gebruiken het DataFrame MET de extra kolommen voor de Excel-export
-                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                            df_for_download.to_excel(writer, index=False, sheet_name='Communities')
-                            worksheet = writer.sheets['Communities']
-                            for i, col in enumerate(df_for_download.columns):
-                                column_len = max(df_for_download[col].astype(str).map(len).max(), len(col))
-                                worksheet.column_dimensions[chr(65 + i)].width = column_len + 2
-                        
-                        excel_data = output.getvalue()
-                        
-                        st.header("3. Download Your Results")
-                        st.download_button(
-                            label="Download results as formatted Excel file",
-                            data=excel_data,
-                            file_name='audience_finder_results.xlsx',
-                            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-                        )
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df_for_download.to_excel(writer, index=False, sheet_name='Communities')
+                workbook = writer.book
+                worksheet = writer.sheets['Communities']
+                
+                # --- START: DEFINITIEVE HYPERLINK STYLING ---
+                # Maak een 'NamedStyle' object voor hyperlinks
+                hyperlink_style = NamedStyle(name="hyperlink_style")
+                hyperlink_style.font = Font(color="0000FF", underline="single")
+                # Voeg de stijl toe aan de workbook
+                if "hyperlink_style" not in workbook.style_names:
+                    workbook.add_named_style(hyperlink_style)
+
+                # Vind de kolomletters voor de links
+                link_col_letter = chr(65 + df_for_download.columns.get_loc('Community Link'))
+                top_posts_col_letter = chr(65 + df_for_download.columns.get_loc('Top Posts (Month)'))
+
+                # Pas de stijl toe op elke cel in die kolommen (behalve de header)
+                for row in range(2, len(df_for_download) + 2):
+                    worksheet[f'{link_col_letter}{row}'].style = "hyperlink_style"
+                    worksheet[f'{top_posts_col_letter}{row}'].style = "hyperlink_style"
+                # --- EINDE STYLING ---
+
+                # Pas kolombreedtes aan
+                for i, col in enumerate(df_for_download.columns):
+                    column = chr(65 + i)
+                    if "Link" in col or "Month" in col:
+                         worksheet.column_dimensions[column].width = 40
                     else:
-                        st.success("✅ Search complete, but no communities were found for these terms.")
+                        max_len = max(df_for_download[col].astype(str).map(len).max(), len(col))
+                        worksheet.column_dimensions[column].width = max_len + 2
+            
+            excel_data = output.getvalue()
+            st.download_button(label="⬇️ Download results as formatted Excel file", data=excel_data, file_name='audience_finder_results.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', use_container_width=True)
+        else:
+            st.success("✅ Search complete, but no communities were found for these terms.")
+            
+# --- HOOFDLOGICA (NIEUWE, ROBUUSTE VERSIE) ---
+def main():
+    st.set_page_config(page_title="The Audience Finder", layout="wide")
 
-                except Exception as e:
-                    st.error(f"An error occurred during the search: {e}")
+    # Haal de 'code' uit de URL, als die er is
+    query_params = st.query_params
+    auth_code = query_params.get("code")
 
-# --- Hoofdlogica van de App ---
-if "logged_in" not in st.session_state:
-    st.session_state["logged_in"] = False
+    # ---- START VAN DE NIEUWE LOGICA-VOLGORDE ----
 
-if st.session_state["logged_in"]:
-    show_main_app()
-else:
-    show_login_form()
+    # 1. Is de gebruiker al volledig ingelogd? (De meest complete staat)
+    if "refresh_token" in st.session_state:
+        # Initialiseer de PRAW instance en toon de hoofd-app
+        reddit_instance = praw.Reddit(
+            client_id=CLIENT_ID, client_secret=CLIENT_SECRET,
+            user_agent=f"AudienceFinder/Boyd (user: {st.session_state.get('username', '...')})",
+            refresh_token=st.session_state["refresh_token"]
+        )
+        show_main_app(reddit_instance)
+        return # Stop de uitvoering hier
+
+    # 2. Is de gebruiker net terug van Reddit? (Heeft een 'code' om in te wisselen)
+    if auth_code:
+        try:
+            # Wissel de code in voor een refresh token
+            temp_reddit = praw.Reddit(
+                client_id=CLIENT_ID, client_secret=CLIENT_SECRET,
+                redirect_uri=REDIRECT_URI, user_agent="AudienceFinder/Boyd (Token Exchange)"
+            )
+            refresh_token = temp_reddit.auth.authorize(auth_code)
+            st.session_state["refresh_token"] = refresh_token
+
+            # Haal gebruikersnaam op en sla op
+            user_reddit = praw.Reddit(
+                client_id=CLIENT_ID, client_secret=CLIENT_SECRET,
+                user_agent="AudienceFinder/Boyd (Get Username)", refresh_token=refresh_token
+            )
+            st.session_state["username"] = user_reddit.user.me().name
+            
+            # Belangrijk: zet password_correct OOK hier op True
+            st.session_state["password_correct"] = True
+
+            # Maak de URL schoon en herlaad de app
+            st.query_params.clear()
+            st.rerun()
+
+        except PRAWException as e:
+            st.error(f"Reddit authentication failed: {e}. Please try again.")
+            st.session_state.clear()
+            st.rerun()
+        return # Stop de uitvoering hier
+
+    # 3. Heeft de gebruiker net het wachtwoord ingevuld?
+    if st.session_state.get("password_correct"):
+        show_reddit_login_page()
+        return # Stop de uitvoering hier
+
+    # 4. Als geen van bovenstaande waar is, toon het wachtwoordformulier
+    show_password_form()
+
+
+if __name__ == "__main__":
+    main()
