@@ -9,13 +9,14 @@ from praw.exceptions import PRAWException
 import numpy as np
 
 # --- Configuratie & Secrets ---
+# ... (geen wijzigingen hier) ...
 CLIENT_ID = st.secrets.get("reddit_client_id")
 CLIENT_SECRET = st.secrets.get("reddit_client_secret")
 APP_PASSWORD = st.secrets.get("app_password")
 REDIRECT_URI = st.secrets.get("redirect_uri")
 
-# --- De Hybride Zoekfunctie (met Cancel-logica toegevoegd) ---
-
+# --- De Hybride Zoekfunctie ---
+# ... (geen wijzigingen hier) ...
 def calculate_relevance_score(found_via_string):
     """Berekent een logische score op basis van de gevonden methodes."""
     score = 0
@@ -24,7 +25,6 @@ def calculate_relevance_score(found_via_string):
     if "Relevant Comment" in found_via_string: score += 3
     return score
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def find_communities_hybrid(_reddit_instance, search_queries: tuple, direct_limit: int, post_limit: int, comment_limit: int):
     """
     Vindt communities met een HYBRIDE aanpak en ondersteunt een cancel-operatie.
@@ -89,8 +89,8 @@ def find_communities_hybrid(_reddit_instance, search_queries: tuple, direct_limi
     column_order = ['Community', 'Relevance Score', 'Found Via', 'Members', 'Community Link', 'Top Posts (Month)']
     return df[column_order].reset_index(drop=True)
 
-
 # --- UI Functies (Login) blijven onveranderd ---
+# ... (geen wijzigingen hier) ...
 def show_password_form():
     # ... (deze functie blijft hetzelfde) ...
     st.title("🚀 The Audience Finder"); st.header("App Access Login")
@@ -109,32 +109,35 @@ def show_reddit_login_page():
     st.link_button("Login with Reddit", auth_url, type="primary", use_container_width=True)
     st.info("ℹ️ You will be redirected to Reddit to grant permission. This app never sees your password.")
 
-
+# --- Hoofdapplicatie (Met alle upgrades) ---
 # --- Hoofdapplicatie (Met alle upgrades) ---
 def show_main_app(reddit):
     # Initialiseer de session state variabelen
     if 'community_scan_running' not in st.session_state: st.session_state.community_scan_running = False
     if 'cancel_scan' not in st.session_state: st.session_state.cancel_scan = False
+    if 'scan_was_cancelled' not in st.session_state: st.session_state.scan_was_cancelled = False
 
     col1, col2 = st.columns([0.85, 0.15])
     with col1:
         st.title("🚀 The Audience Finder")
-        st.markdown(f"Logged in as **u/{st.session_state.username}**. Discover relevant Reddit communities.")
+        st.markdown(f"Logged in as **u/{st.session_state.username}**.")
     with col2:
         if st.button("Logout", use_container_width=True, disabled=st.session_state.community_scan_running):
             st.session_state.clear(); st.rerun()
 
-    # GEHARMONISEERDE UI
+    # AANGEPAST: De instellingen zijn nu uitgeschakeld tijdens het zoeken
     with st.expander("⚙️ Advanced Search Settings"):
         st.markdown("Control the trade-off between search speed and thoroughness.")
         c1, c2, c3 = st.columns(3)
-        direct_limit = c1.slider("Direct Search Depth", 0, 50, 10, help="How many communities to find based on name/description. Quick but less precise.")
-        post_limit = c2.slider("Post Search Depth", 0, 100, 25, help="How many posts to analyze. Finds communities where your topic is actively discussed.")
-        comment_limit = c3.slider("Comment Search Depth", 0, 50, 20, help="How many comments *per post* to analyze. Deepest (and slowest) search for finding hidden user pain points.")
+        direct_limit = c1.slider("Direct Search Depth", 0, 50, 10, help="How many communities to find based on name/description. Quick but less precise.", disabled=st.session_state.community_scan_running)
+        post_limit = c2.slider("Post Search Depth", 0, 100, 25, help="How many posts to analyze. Finds communities where your topic is actively discussed.", disabled=st.session_state.community_scan_running)
+        comment_limit = c3.slider("Comment Search Depth", 0, 50, 20, help="How many comments *per post* to analyze. Deepest (and slowest) search for finding hidden user pain points.", disabled=st.session_state.community_scan_running)
 
-    st.header("1. Enter Your Search Queries")
+    # AANGEPAST: Header is nu niet meer genummerd
+    st.header("Discover Communities")
     with st.form(key='search_form'):
-        search_queries_input = st.text_area("Queries (one per line)", height=150, label_visibility="collapsed", placeholder="For example:\nSaaS for startups...")
+        # AANGEPAST: Tekstveld is nu ook uitgeschakeld tijdens het zoeken
+        search_queries_input = st.text_area("Keywords (one per line)", height=150, label_visibility="collapsed", placeholder="For example:\nSaaS for startups...", disabled=st.session_state.community_scan_running)
         submitted = st.form_submit_button("Find Communities", type="primary", use_container_width=True, disabled=st.session_state.community_scan_running)
 
         if submitted:
@@ -142,46 +145,48 @@ def show_main_app(reddit):
             if not queries_tuple:
                 st.warning("Please enter at least one search query.")
             else:
-                # Activeer de scan-modus
                 st.session_state.community_scan_running = True
                 st.session_state.cancel_scan = False
+                st.session_state.scan_was_cancelled = False # Reset cancel status bij nieuwe zoekopdracht
                 st.session_state.search_params = {"queries": queries_tuple, "direct": direct_limit, "post": post_limit, "comment": comment_limit}
                 st.rerun()
     
-    # NIEUW: De professionele laad- en cancel-logica
     if st.session_state.community_scan_running:
         st.info("Community search in progress...")
         if st.button("Cancel Search"):
             st.session_state.cancel_scan = True
+            st.session_state.scan_was_cancelled = True
         
-        # Maak een placeholder voor de progress bar zodat de functie hem kan updaten
         st.session_state['progress_bar_placeholder'] = st.progress(0.0)
         
         try:
             p = st.session_state.search_params
             st.session_state['results_df'] = find_communities_hybrid(reddit, p['queries'], p['direct'], p['post'], p['comment'])
         finally:
-            # Ruim de state op, ongeacht of de zoekopdracht is voltooid of geannuleerd
             st.session_state.community_scan_running = False
             st.session_state.cancel_scan = False
-            del st.session_state.search_params
-            if 'progress_bar_placeholder' in st.session_state:
-                del st.session_state['progress_bar_placeholder']
+            if 'search_params' in st.session_state: del st.session_state.search_params
+            if 'progress_bar_placeholder' in st.session_state: del st.session_state['progress_bar_placeholder']
             st.rerun()
 
-    if 'results_df' in st.session_state:
+    if st.session_state.get("scan_was_cancelled"):
+        st.warning("️️Search was cancelled by the user.")
+        st.session_state.scan_was_cancelled = False 
+        if 'results_df' in st.session_state: del st.session_state['results_df']
+
+    elif 'results_df' in st.session_state:
         results_df = st.session_state['results_df']
-        st.header("2. Discovered Communities")
+        # AANGEPAST: De headers voor resultaten zijn samengevoegd en niet meer genummerd
+        st.header("Search Results") 
         if not results_df.empty:
             st.dataframe(results_df, use_container_width=True, hide_index=True)
-            # ... (Download knop code blijft hetzelfde) ...
-            st.header("3. Download Your Results")
+            
+            # De download knop hoort logisch bij de resultaten
             df_for_download = results_df.copy()
             df_for_download['Status'], df_for_download['Priority'], df_for_download['Notes'] = 'Not Started', '', ''
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 df_for_download.to_excel(writer, index=False, sheet_name='Communities')
-                # ... (Excel opmaak code) ...
                 workbook, worksheet = writer.book, writer.sheets['Communities']
                 hyperlink_style = NamedStyle(name="hyperlink_style", font=Font(color="0000FF", underline="single"))
                 if "hyperlink_style" not in workbook.style_names: workbook.add_named_style(hyperlink_style)
@@ -196,8 +201,9 @@ def show_main_app(reddit):
             st.download_button(label="⬇️ Download as Formatted Excel File", data=excel_data, file_name='audience_finder_results.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', use_container_width=True)
         else:
             st.success("✅ Search complete. No communities found for these terms.")
-
+            
 # --- Hoofdlogica (onveranderd) ---
+# ... (geen wijzigingen hier) ...
 def main():
     st.set_page_config(page_title="The Audience Finder", layout="wide")
     # ... (De volledige, robuuste main() functie blijft hetzelfde) ...
