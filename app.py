@@ -128,8 +128,8 @@ def show_main_app(reddit):
     with st.expander("⚙️ Advanced Search Settings"):
         st.markdown("Control the trade-off between search speed and thoroughness.")
         c1, c2, c3 = st.columns(3)
-        direct_limit = c1.slider("Direct Search Depth", 5, 50, 10, help="How many communities to find based on name/description. Quick but less precise.")
-        post_limit = c2.slider("Post Search Depth", 10, 100, 25, help="How many posts to analyze. Finds communities where your topic is actively discussed.")
+        direct_limit = c1.slider("Direct Search Depth", 0, 50, 10, help="How many communities to find based on name/description. Quick but less precise.")
+        post_limit = c2.slider("Post Search Depth", 0, 100, 25, help="How many posts to analyze. Finds communities where your topic is actively discussed.")
         comment_limit = c3.slider("Comment Search Depth", 0, 50, 20, help="How many comments *per post* to analyze. Deepest (and slowest) search for finding hidden user pain points.")
 
     st.header("1. Enter Your Search Queries")
